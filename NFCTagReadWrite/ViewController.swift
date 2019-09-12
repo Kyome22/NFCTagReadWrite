@@ -51,7 +51,7 @@ class ViewController: UIViewController {
             Swift.print("NFCはつかえないよ．")
             return
         }
-        session = NFCNDEFReaderSession(delegate: self, queue: nil, invalidateAfterFirstRead: true)
+        session = NFCNDEFReaderSession(delegate: self, queue: nil, invalidateAfterFirstRead: false)
         session?.alertMessage = "NFCタグをiPhone上部に近づけてください．"
         session?.begin()
     }
@@ -80,19 +80,23 @@ class ViewController: UIViewController {
     
     func updateMessage(_ message: NFCNDEFMessage) -> Bool {
         if message.records.isEmpty { return false }
-        var result: String = ""
+        var results = [String]()
         for record in message.records {
-            guard let text = String(data: record.payload, encoding: String.Encoding.utf8) else {
-                continue
-            }
-            if let range = text.range(of: "en") {
-                result += text.replacingCharacters(in: range, with: "")
-            } else {
-                result += text
+            if let type = String(data: record.type, encoding: .utf8) {
+                if type == "T" { //データ形式がテキストならば
+                    let res = record.wellKnownTypeTextPayload()
+                    if let text = res.0 {
+                        results.append("text: \(text)")
+                    }
+                } else if type == "U" { //データ形式がURLならば
+                    let res = record.wellKnownTypeURIPayload()
+                    if let url = res {
+                        results.append("url: \(url)")
+                    }
+                }
             }
         }
-        Swift.print("res: ", result)
-        stopSession(alert: "Text: " + result)
+        stopSession(alert: "[" + results.joined(separator: ", ") + "]")
         return true
     }
     
@@ -101,9 +105,7 @@ class ViewController: UIViewController {
 extension ViewController: NFCNDEFReaderSessionDelegate {
     
     func readerSessionDidBecomeActive(_ session: NFCNDEFReaderSession) {
-        if let payload = NFCNDEFPayload.wellKnownTypeTextPayload(string: self.text, locale: Locale(identifier: "en")) {
-            message = NFCNDEFMessage(records: [payload])
-        }
+        //
     }
     
     func readerSession(_ session: NFCNDEFReaderSession, didInvalidateWithError error: Error) {
@@ -126,17 +128,21 @@ extension ViewController: NFCNDEFReaderSessionDelegate {
                 session.restartPolling()
                 return
             }
+        }
             
-            tag.queryNDEFStatus { (status, capacity, error) in
-                if status == .notSupported {
-                    self.stopSession(error: "このNFCタグは対応していないみたい．")
+        tag.queryNDEFStatus { (status, capacity, error) in
+            if status == .notSupported {
+                self.stopSession(error: "このNFCタグは対応していないみたい．")
+                return
+            }
+            if self.state == .write {
+                if status == .readOnly {
+                    self.stopSession(error: "このNFCタグには書き込みできないぞ")
                     return
                 }
-                if self.state == .write {
-                    if status == .readOnly {
-                        self.stopSession(error: "このNFCタグには書き込みできないぞ")
-                        return
-                    }
+                if let payload = NFCNDEFPayload.wellKnownTypeTextPayload(string: self.text, locale: Locale(identifier: "en")) {
+                    let urlPayload = NFCNDEFPayload.wellKnownTypeURIPayload(string: "https://kyome.io/")!
+                    self.message = NFCNDEFMessage(records: [payload, urlPayload])
                     if self.message!.length > capacity {
                         self.stopSession(error: "容量オーバーで書き込めないぞ！\n容量は\(capacity)bytesらしいぞ．")
                         return
@@ -149,15 +155,15 @@ extension ViewController: NFCNDEFReaderSessionDelegate {
                             self.stopSession(alert: "書き込み成功＼(^o^)／")
                         }
                     }
-                } else if self.state == .read {
-                    tag.readNDEF { (message, error) in
-                        if error != nil || message == nil {
-                            self.stopSession(error: error!.localizedDescription)
-                            return
-                        }
-                        if !self.updateMessage(message!) {
-                            self.stopSession(error: "このNFCタグは対応していないみたい．")
-                        }
+                }
+            } else if self.state == .read {
+                tag.readNDEF { (message, error) in
+                    if error != nil || message == nil {
+                        self.stopSession(error: error!.localizedDescription)
+                        return
+                    }
+                    if !self.updateMessage(message!) {
+                        self.stopSession(error: "このNFCタグは対応していないみたい．")
                     }
                 }
             }
